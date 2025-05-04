@@ -7,6 +7,13 @@ use core_foundation::string::CFString;
 use debug_print::debug_println;
 use lru::LruCache;
 use parking_lot::Mutex;
+use crate::utils::*{
+    get_selected_text_by_clipboard,
+    get_context_via_select_all,
+};
+use crate::GetTextError;
+use enigo::{Enigo, Keyboard, Settings};
+use std::{thread, time::Duration};
 
 static GET_SELECTED_TEXT_METHOD: Mutex<Option<LruCache<String, u8>>> = Mutex::new(None);
 
@@ -135,5 +142,40 @@ fn get_selected_text_by_clipboard_using_applescript() -> Result<String, Box<dyn 
             .collect::<String>()
             .into();
         Err(err)
+    }
+}
+
+pub fn get_selected_text_os(cancel_select: bool) -> Result<String, GetTextError> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| GetTextError::Input(e.to_string()))?;
+    get_selected_text_by_clipboard(&mut enigo, cancel_select)
+}
+
+pub fn get_selected_text_with_context_os(
+    cancel_select: bool,
+) -> Result<(String, Option<String>), GetTextError> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| GetTextError::Input(e.to_string()))?;
+
+    // 1. Get selected text using standard clipboard method first
+    let selected_text = get_selected_text_by_clipboard(&mut enigo, cancel_select)?;
+
+    if selected_text.is_empty() {
+        // If no text was selected, we can't get context
+        return Ok((selected_text, None));
+    }
+
+    // 2. On macOS, directly use the fallback: Select All + Copy
+    // Short delay before fallback simulation
+    thread::sleep(Duration::from_millis(100));
+    match get_context_via_select_all(&mut enigo, &selected_text) {
+        Ok(Some(context)) => Ok((selected_text, Some(context))),
+        Ok(None)=> Ok((selected_text, None)), // Should not happen
+        Err(GetTextError::NotInContext) => {
+            eprintln!("Fallback failed: Selected text not found in full text.");
+            Ok((selected_text, None)) 
+        }
+        Err(e) => {
+            eprintln!("Fallback context retrieval failed: {}", e);
+            Ok((selected_text, None))
+        }
     }
 }
