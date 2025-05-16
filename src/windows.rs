@@ -15,16 +15,9 @@ use println as log_println;
 const CONTEXT_CHARS_BEFORE_UIA_FALLBACK: usize = 150;
 const CONTEXT_CHARS_AFTER_UIA_FALLBACK: usize = 150;
 
-pub fn get_selected_text_os(cancel_select: bool) -> Result<String, GetTextError> {
-    log_println!("[GET_TEXT_OS] Starting get_selected_text_os...");
-    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| GetTextError::Input(e.to_string()))?;
-    
-    // 使用原有的 get_selected_text_by_clipboard 函数获取选中文本
-    log_println!("[GET_TEXT_OS] Getting selected text via clipboard...");
-    let result = get_selected_text_by_clipboard(&mut enigo, cancel_select);
-    log_println!("[GET_TEXT_OS] get_selected_text_by_clipboard result: {:?}", result.is_ok());
-    
-    result
+pub fn get_selected_text() -> Result<String, Box<dyn std::error::Error>> {
+    let mut enigo = Enigo::new(&Settings::default()).unwrap();
+    crate::utils::get_selected_text_by_clipboard(&mut enigo, false)
 }
 
 pub fn get_selected_text_with_context_os(
@@ -50,7 +43,7 @@ pub fn get_selected_text_with_context_os(
     match get_context_via_uia(&selected_text) {
         Ok(Some(context)) => {
             log_println!("[CTX_OS] UIA context retrieval successful.");
-            return Ok((selected_text, Some(context)));
+            return Ok((selected_text, Some(context)))
         }
         Ok(None) => {
             log_println!("[CTX_OS] UIA context retrieval ran but found no context.");
@@ -68,16 +61,16 @@ pub fn get_selected_text_with_context_os(
     log_println!("[CTX_OS] Fallback result: {:?}", fallback_result.is_ok());
 
     match fallback_result {
-        Ok(Some(context)) => Ok((selected_text, Some(context))),
-        Ok(None)=> Ok((selected_text, None)), // Should not happen if selected_text is not empty
-        Err(GetTextError::NotInContext) => {
-            log_println!("[CTX_OS] Fallback failed: Selected text not found in full text.");
-            Ok((selected_text, None)) 
+        Ok(Some(context)) => Ok((selected_text, Some(context))), // <--- 返回 Some(context)
+        Ok(None) | Err(GetTextError::NotInContext) => { // 如果 fallback 没找到上下文或选中文本不在其中
+             log_println!("[CTX_OS] Fallback did not find context or selection was not in it.");
+            Ok((selected_text, None)) // <--- 返回 None context
         }
-        Err(e) => {
+        Err(e) => { // 其他 fallback 错误
              log_println!("[CTX_OS] Fallback context retrieval failed: {}", e);
-             Ok((selected_text, None))
-        } 
+             // 即使 fallback 失败，我们仍然成功获取了 selected_text
+             Ok((selected_text, None)) // <--- 返回 None context，因为上下文获取失败
+        }
     }
 }
 
