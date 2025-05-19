@@ -40,6 +40,8 @@ pub(crate) fn up_control_keys(enigo: &mut Enigo) {
     enigo.key(Key::Shift, Direction::Release).unwrap();
     enigo.key(Key::Space, Direction::Release).unwrap();
     enigo.key(Key::Tab, Direction::Release).unwrap();
+    #[cfg(target_os = "macos")]
+    enigo.key(Key::Meta, Direction::Release).unwrap();
 }
 
 pub(crate) fn copy(enigo: &mut Enigo) {
@@ -146,7 +148,7 @@ pub(crate) fn get_selected_text_by_clipboard(
 pub(crate) fn get_context_via_select_all(
     enigo: &mut Enigo,
     selected_text: &str,
-) -> Result<Option<String>, GetTextError> {
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     use arboard::Clipboard;
     use std::time::{Duration, Instant};
     
@@ -179,7 +181,7 @@ pub(crate) fn get_context_via_select_all(
     
     if start_time.elapsed().as_millis() > CLIPBOARD_OPERATION_TIMEOUT_MS as u128 {
         log_println!("[SELECT_ALL] Timeout before Select All. Abort.");
-        return Err(GetTextError::Other("Operation timed out".to_string()));
+        return Err(Box::new(GetTextError::Other("Operation timed out".to_string())));
     }
 
     // Simulate Ctrl+A (or Cmd+A on macOS)
@@ -187,14 +189,14 @@ pub(crate) fn get_context_via_select_all(
     #[cfg(target_os = "macos")]
     enigo.key(Key::Meta, Direction::Press).unwrap();
     #[cfg(not(target_os = "macos"))]
-    enigo.key(Key::Control, Direction::Press).unwrap();
+    enigo.key(Key::Command, Direction::Press).unwrap();
 
     #[cfg(target_os = "windows")]
     enigo.key(Key::A, Direction::Click).unwrap();
     #[cfg(target_os = "linux")]
     enigo.key(Key::Unicode('a'), Direction::Click).unwrap();
     #[cfg(target_os = "macos")]
-    enigo.key(Key::A, Direction::Click).unwrap();
+    enigo.key(Key::Unicode('a'), Direction::Click).unwrap();
 
     #[cfg(target_os = "macos")]
     enigo.key(Key::Meta, Direction::Release).unwrap();
@@ -205,7 +207,7 @@ pub(crate) fn get_context_via_select_all(
     
     if start_time.elapsed().as_millis() > CLIPBOARD_OPERATION_TIMEOUT_MS as u128 {
         log_println!("[SELECT_ALL] Timeout before Copy. Abort.");
-        return Err(GetTextError::Other("Operation timed out".to_string()));
+        return Err(Box::new(GetTextError::Other("Operation timed out".to_string())));
     }
 
     log_println!("[SELECT_ALL] Simulating Copy...");
@@ -249,7 +251,7 @@ pub(crate) fn get_context_via_select_all(
 
     if start_time.elapsed().as_millis() > CLIPBOARD_OPERATION_TIMEOUT_MS as u128 {
         log_println!("[SELECT_ALL] Timeout before getting clipboard content. Abort.");
-        return Err(GetTextError::Other("Operation timed out".to_string()));
+        return Err(Box::new(GetTextError::Other("Operation timed out".to_string())));
     }
 
     // --- Get Full Text ---  
@@ -307,13 +309,13 @@ pub(crate) fn get_context_via_select_all(
             } else {
                 // Selected text not found in the full text copied via Ctrl+A
                 log_println!("[SELECT_ALL] Selected text not found in full text.");
-                Err(GetTextError::NotInContext)
+                Err(Box::new(GetTextError::NotInContext))
             }
         }
         Err(e) => {
             // Failed to get text after Select All + Copy
             log_println!("[SELECT_ALL] Failed to get text from clipboard: {}", e);
-            Err(GetTextError::Other("Failed to get text after Select All".to_string()))
+            Err(Box::new(GetTextError::Other("Failed to get text after Select All".to_string())))
         }
     }
 }

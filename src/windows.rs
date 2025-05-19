@@ -20,14 +20,12 @@ pub fn get_selected_text() -> Result<String, Box<dyn std::error::Error>> {
     crate::utils::get_selected_text_by_clipboard(&mut enigo, false)
 }
 
-pub fn get_selected_text_with_context_os(
-    cancel_select: bool,
-) -> Result<(String, Option<String>), GetTextError> {
+pub fn get_selected_text_with_context_os() -> Result<(String, Option<String>), GetTextError> {
     log_println!("[CTX_OS] Starting get_selected_text_with_context_os...");
     
     // 1. 调用现有的 get_selected_text 函数获取选中文本
     log_println!("[CTX_OS] Calling get_selected_text...");
-    let selected_text = crate::get_selected_text(cancel_select)?;
+    let selected_text = crate::get_selected_text()?;
     log_println!("[CTX_OS] Initial selected text: {:?}", selected_text);
 
     if selected_text.is_empty() {

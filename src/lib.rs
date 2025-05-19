@@ -1,4 +1,3 @@
-#[cfg(not(target_os = "macos"))]
 mod utils;
 
 #[cfg(target_os = "linux")]
@@ -40,28 +39,26 @@ pub enum GetTextError {
 /// # Errors
 ///
 /// Returns `GetTextError` if clipboard operations fail or other errors occur.
-pub fn get_selected_text(cancel_select: bool) -> Result<String, GetTextError> {
-    // 增加调试日志
+pub fn get_selected_text() -> Result<String, Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
-        println!("[LIB] Calling Windows get_selected_text_os with cancel_select={}", cancel_select);
         let result = windows::get_selected_text();
         println!("[LIB] Windows get_selected_text_os result: {:?}", result.is_ok());
-        result.map_err(|e| GetTextError::Other(e.to_string()))
+        result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
     #[cfg(target_os = "macos")]
     {
-        // macos::get_selected_text_os(cancel_select) // Temporarily disable
-        Err(GetTextError::Unimplemented)
+        let result = macos::get_selected_text();
+        println!("[LIB] macOS get_selected_text_os result: {:?}", result.is_ok());
+        result
     }
     #[cfg(target_os = "linux")]
     {
-        // linux::get_selected_text_os(cancel_select) // Temporarily disable
-         Err(GetTextError::Unimplemented)
+        Err(Box::new(GetTextError::Unimplemented) as Box<dyn std::error::Error>)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        Err(GetTextError::Unimplemented)
+        Err(Box::new(GetTextError::Unimplemented) as Box<dyn std::error::Error>)
     }
 }
 
@@ -83,22 +80,19 @@ pub fn get_selected_text(cancel_select: bool) -> Result<String, GetTextError> {
 /// # Errors
 ///
 /// Returns `GetTextError` if clipboard operations, UIA, or input simulation fail, or if unimplemented.
-pub fn get_selected_text_with_context(
-    cancel_select: bool,
-) -> Result<(String, Option<String>), GetTextError> {
+pub fn get_selected_text_with_context() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
-        windows::get_selected_text_with_context_os(cancel_select)
+        windows::get_selected_text_with_context_os()
     }
     #[cfg(target_os = "macos")]
     {
-        // macos::get_selected_text_with_context_os(cancel_select) // Temporarily disable
-        Err(GetTextError::Unimplemented)
+        macos::get_selected_text_with_context()
     }
     #[cfg(target_os = "linux")]
     {
-        // linux::get_selected_text_with_context_os(cancel_select) // Temporarily disable
-        Err(GetTextError::Unimplemented)
+        // linux::get_selected_text_with_context_os(_cancel_select) // Temporarily disable
+        Err(Box::new(GetTextError::Unimplemented))
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
