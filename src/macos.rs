@@ -92,7 +92,6 @@ fn get_selected_text_by_ax() -> Result<(String, Option<String>), Box<dyn std::er
         ("ValueDescription", Box::new(|| focused_element.value_description())),
     ];
 
-
     for (name, getter) in &string_attributes_to_log {
         match getter() {
             Ok(value) => { debug_println!("[AX_CONTEXT_LOG]   Attribute [{}]: '{}'", name, value.to_string()) }
@@ -309,8 +308,9 @@ pub fn get_selected_text_with_context() -> Result<(String, Option<String>), Box<
             Ok((selected_text, context_option))
         }
         Err(e) => {
-            debug_println!("[CONTEXT_MACOS] Error in get_selected_text_by_ax: {:?}", e);
-            Err(e)
+            debug_println!("[CONTEXT_MACOS] Error in get_selected_text_by_ax: {:?}. Falling back to AppleScript.", e);
+            // Fallback to getting just the selected text
+            get_selected_text_by_clipboard_using_applescript().map(|text| (text, None))
         }
     }
 }
