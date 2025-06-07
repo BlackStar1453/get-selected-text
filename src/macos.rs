@@ -80,7 +80,7 @@ fn get_selected_text_by_ax_robust() -> Result<(String, Option<String>), Box<dyn 
         return Ok(result);
     }
     
-    debug_println!("[AX_ROBUST] All strategies failed");
+    debug_println!("[AX_ROBUST] All AX strategies failed");
     Err(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
         "All AX strategies failed to find UI element with selected text",
@@ -260,7 +260,7 @@ fn log_element_attributes(element: &AXUIElement, prefix: &str) {
                 debug_println!("[{}] {}: '{}' = <布尔值>", prefix, attr_name, description);
             } else {
                 debug_println!("[{}] {}: '{}' = <复杂类型>", prefix, attr_name, description);
-            }
+            } 
         }
     }
 }
@@ -301,7 +301,7 @@ fn get_child_at_index(element: &AXUIElement, index: usize) -> Option<AXUIElement
     }
     None
 }
-
+    
 // 获取元素的角色信息
 fn get_element_role(element: &AXUIElement) -> Option<String> {
     if let Ok(role_attr) = element.attribute(&AXAttribute::new(&CFString::from_static_string("AXRole"))) {
@@ -387,9 +387,9 @@ fn extract_text_and_context(element: &AXUIElement) -> Result<(String, Option<Str
     // 如果没有选中文本，返回错误
     if selected_text.is_empty() {
         return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
+                std::io::ErrorKind::NotFound,
             "No selected text found in element",
-        )));
+            )));
     }
     
     // 尝试获取上下文
@@ -436,13 +436,13 @@ fn get_context_from_element(element: &AXUIElement) -> Option<String> {
             if !text.is_empty() && text.len() > 10 { // 确保有足够的内容作为上下文
                 debug_println!("[AX_CONTEXT] Found context from AXValue (length: {})", text.len());
                 return Some(text);
-            }
+        }
         }
     }
-    
+
     // 策略2: 从描述获取
     if let Ok(cf_string) = element.description() {
-        let desc_text = cf_string.to_string();
+            let desc_text = cf_string.to_string();
         if !desc_text.is_empty() && desc_text.len() > 10 {
             debug_println!("[AX_CONTEXT] Found context from description (length: {})", desc_text.len());
             return Some(desc_text);
@@ -456,12 +456,12 @@ fn get_context_from_element(element: &AXUIElement) -> Option<String> {
             debug_println!("[AX_CONTEXT] Found context from title (length: {})", title_text.len());
             return Some(title_text);
         }
-    }
+        }
     
     debug_println!("[AX_CONTEXT] No context found from element attributes");
-    None
-}
-
+            None
+        }
+    
 // 保持原有的 get_selected_text_by_ax 函数以兼容性
 fn get_selected_text_by_ax() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
     // 直接调用新的健壮版本
@@ -532,6 +532,14 @@ pub fn get_selected_text_with_context() -> Result<(String, Option<String>), Box<
     // Directly call the enhanced AX function which now returns (String, Option<String>)
     match get_selected_text_by_ax_robust() {
         Ok((selected_text, context_option)) => {
+            // If AX was able to get the selected text but not the context,
+            // fall back to AppleScript to get both. This can happen in apps
+            // like web browsers where AX context is unreliable.
+            if !selected_text.is_empty() && context_option.is_none() {
+                debug_println!("[CONTEXT_MACOS] AX got text but no context. Falling back to AppleScript.");
+                return get_selected_text_with_context_applescript();
+            }
+
             if selected_text.is_empty() && context_option.is_none() {
                  // If both are empty, it might indicate an issue or no actual selection/context
                  debug_println!("[CONTEXT_MACOS] Both selected text and AX context are empty.");
@@ -569,7 +577,7 @@ fn get_selected_text_with_context_applescript() -> Result<(String, Option<String
             } else {
                 debug_println!("[APPLESCRIPT_CONTEXT] Context doesn't contain selected text, returning without context");
                 Ok((selected_text, None))
-            }
+        }
         }
         Err(e) => {
             debug_println!("[APPLESCRIPT_CONTEXT] Failed to get context: {:?}", e);
@@ -579,6 +587,7 @@ fn get_selected_text_with_context_applescript() -> Result<(String, Option<String
 }
 
 // AppleScript脚本获取上下文
+// 新策略：不再使用Cmd+A，而是基于当前选区，通过模拟Shift+Option+左右箭头来扩展选区，以获取更精确的上下文。
 fn get_context_via_applescript() -> Result<String, Box<dyn std::error::Error>> {
     const CONTEXT_SCRIPT: &str = r#"
 use AppleScript version "2.4"
@@ -586,53 +595,45 @@ use scripting additions
 use framework "Foundation"
 use framework "AppKit"
 
-set savedAlertVolume to alert volume of (get volume settings)
+-- This script attempts to get the context of the entire text block/field.
+-- It uses a more robust selection method that works in both editable fields
+-- (with a cursor) and static text views (without a cursor).
 
--- Back up clipboard contents:
 set savedClipboard to the clipboard
 
-set thePasteboard to current application's NSPasteboard's generalPasteboard()
-set theCount to thePasteboard's changeCount()
-
+-- The following key combination is a robust way to select the current "block" of text.
+-- 1. Command+Shift+Up Arrow: Selects from the current position to the beginning.
+-- 2. Command+Shift+Down Arrow: Extends that selection to the very end.
+-- This effectively selects the entire paragraph or text field content.
 tell application "System Events"
-    set volume alert volume 0
+    -- Select up to the beginning of the text area
+    key code 126 using {command down, shift down} -- Command + Shift + Up Arrow
+    delay 0.1
+
+    -- Extend the selection to the end of the text area
+    key code 125 using {command down, shift down} -- Command + Shift + Down Arrow
+    delay 0.1
 end tell
 
--- 尝试获取更多上下文：模拟 Cmd+A 来选择全部文本
-tell application "System Events" to keystroke "a" using {command down}
-delay 0.05
-
--- Copy all text to clipboard:
+-- Now copy the newly selected block (our context)
 tell application "System Events" to keystroke "c" using {command down}
-delay 0.1
+delay 0.15 -- Increased delay for clipboard to update
 
--- 恢复警告音量
-tell application "System Events"
-    set volume alert volume savedAlertVolume
-end tell
+set contextText to ""
+try
+    set contextText to the clipboard
+end try
 
--- 检查剪贴板是否有变化
-if thePasteboard's changeCount() is theCount then
-    set the clipboard to savedClipboard
-    return ""
-end if
-
-set theFullText to the clipboard
-
--- 恢复原始剪贴板内容
+-- Restore the original clipboard
 set the clipboard to savedClipboard
 
--- 按ESC键取消全选状态
-tell application "System Events" to keystroke (ASCII character 27)
-delay 0.05
+-- Cancel the selection to leave a clean state. A single arrow press is enough.
+tell application "System Events" to key code 123 -- Arrow Left
 
--- 再按一下左箭头确保取消选择
-tell application "System Events" to key code 123
-
-theFullText
+return contextText
 "#;
 
-    debug_println!("[APPLESCRIPT_CONTEXT] Executing context retrieval script");
+    debug_println!("[APPLESCRIPT_CONTEXT] Executing context retrieval script by selecting the text block.");
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg(CONTEXT_SCRIPT)
