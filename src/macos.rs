@@ -395,13 +395,40 @@ fn extract_text_and_context(element: &AXUIElement) -> Result<(String, Option<Str
     // 尝试获取上下文
     let context = get_context_from_element(element);
     
+    // 针对 WebArea 的特殊处理：如果找到了选中文本但没有上下文，则强制触发 fallback
+    if get_element_role(element).as_deref() == Some("AXWebArea") && context.is_none() {
+        debug_println!("[AX_EXTRACT] Found selected text in WebArea but no AXValue context. Forcing an error to trigger AppleScript fallback.");
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Found text in WebArea but context requires fallback",
+        )));
+    }
+
     Ok((selected_text, context))
 }
 
 // 获取上下文的方法
 fn get_context_from_element(element: &AXUIElement) -> Option<String> {
     debug_println!("[AX_CONTEXT] Attempting to get context from element");
+    let role = get_element_role(element);
+
+    // Special handling for WebArea: only trust AXValue
+    if role.as_deref() == Some("AXWebArea") {
+        debug_println!("[AX_CONTEXT] Element is a WebArea. Prioritizing AXValue for context.");
+        if let Ok(cf_type_val) = element.value() {
+            if let Some(s) = cf_type_val.downcast_into::<CFString>() {
+                let text = s.to_string();
+                if !text.is_empty() {
+                    debug_println!("[AX_CONTEXT] Found context for WebArea from AXValue (length: {})", text.len());
+                    return Some(text);
+                }
+            }
+        }
+        debug_println!("[AX_CONTEXT] Could not get context from AXValue for WebArea. Returning None to avoid using incorrect fallbacks like title.");
+        return None; // For WebArea, do NOT fall back to title or description
+    }
     
+    // Fallback logic for other element types
     // 策略1: 从 AXValue 获取
     if let Ok(cf_type_val) = element.value() {
         if let Some(s) = cf_type_val.downcast_into::<CFString>() {
