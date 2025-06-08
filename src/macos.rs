@@ -12,7 +12,13 @@ use core_foundation::array::CFArray;
 use debug_print::debug_println;
 use lru::LruCache;
 use parking_lot::Mutex;
-use enigo::{Enigo, Mouse, Settings};
+use enigo::{
+    Button,
+    Direction::{self, Click, Press, Release},
+    Enigo, Key, Keyboard, Mouse, Settings,
+};
+use std::thread;
+use std::time::Duration;
 
 static GET_SELECTED_TEXT_METHOD: Mutex<Option<LruCache<String, u8>>> = Mutex::new(None);
 
@@ -164,12 +170,12 @@ fn try_active_window_approach() -> Result<(String, Option<String>), Box<dyn std:
 fn traverse_ui_tree(element: &AXUIElement, depth: usize, element_name: &str) -> Option<(String, Option<String>)> {
     const MAX_DEPTH: usize = 6;
     const MAX_CHILDREN_PER_LEVEL: usize = 15;
-    
+
     if depth > MAX_DEPTH {
         debug_println!("[UI_TRAVERSE] Reached max depth {}, stopping", depth);
         return None;
     }
-    
+
     let indent = "  ".repeat(depth);
     debug_println!("[UI_TRAVERSE] {}Depth {}: Checking {} element", indent, depth, element_name);
     
@@ -190,13 +196,13 @@ fn traverse_ui_tree(element: &AXUIElement, depth: usize, element_name: &str) -> 
         debug_println!("[UI_TRAVERSE] {}Found AXChildren attribute", indent);
         
         // 尝试使用更安全的方式获取子元素
-        if let Some(children_count) = get_children_count(element) {
+    if let Some(children_count) = get_children_count(element) {
             debug_println!("[UI_TRAVERSE] {}Found {} children", indent, children_count);
             
-            let search_limit = children_count.min(MAX_CHILDREN_PER_LEVEL);
-            
-            for i in 0..search_limit {
-                if let Some(child) = get_child_at_index(element, i) {
+        let search_limit = children_count.min(MAX_CHILDREN_PER_LEVEL);
+
+        for i in 0..search_limit {
+            if let Some(child) = get_child_at_index(element, i) {
                     debug_println!("[UI_TRAVERSE] {}Checking child {}/{}", indent, i + 1, search_limit);
                     
                     let child_name = get_element_role(&child).unwrap_or_else(|| format!("Child{}", i));
@@ -215,7 +221,7 @@ fn traverse_ui_tree(element: &AXUIElement, depth: usize, element_name: &str) -> 
             }
         } else {
             debug_println!("[UI_TRAVERSE] {}Could not determine children count", indent);
-        }
+            }
     } else {
         debug_println!("[UI_TRAVERSE] {}No AXChildren attribute found", indent);
     }
@@ -536,8 +542,8 @@ pub fn get_selected_text_with_context() -> Result<(String, Option<String>), Box<
             // fall back to AppleScript to get both. This can happen in apps
             // like web browsers where AX context is unreliable.
             if !selected_text.is_empty() && context_option.is_none() {
-                debug_println!("[CONTEXT_MACOS] AX got text but no context. Falling back to AppleScript.");
-                return get_selected_text_with_context_applescript();
+                debug_println!("[CONTEXT_MACOS] AX got text but no context. Falling back to mouse fallback.");
+                return get_selected_text_with_context_fallback();
             }
 
             if selected_text.is_empty() && context_option.is_none() {
@@ -550,74 +556,89 @@ pub fn get_selected_text_with_context() -> Result<(String, Option<String>), Box<
             Ok((selected_text, context_option))
         }
         Err(e) => {
-            debug_println!("[CONTEXT_MACOS] Error in get_selected_text_by_ax_robust: {:?}. Falling back to AppleScript.", e);
+            debug_println!("[CONTEXT_MACOS] Error in get_selected_text_by_ax_robust: {:?}. Falling back to mouse fallback.", e);
             // 改进的fallback：尝试使用AppleScript获取上下文
-            get_selected_text_with_context_applescript()
+            get_selected_text_with_context_fallback()
         }
     }
 }
 
-// 新增：使用AppleScript获取选中文本和上下文的方法
-fn get_selected_text_with_context_applescript() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
-    debug_println!("[APPLESCRIPT_CONTEXT] Attempting to get selected text and context via AppleScript");
+// Fallback method using mouse simulation to get context
+fn get_selected_text_with_context_fallback() -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
+    debug_println!("[CONTEXT_FALLBACK] Attempting to get text and context via fallback.");
     
-    // 首先获取选中文本
+    // First, get the currently selected text
     let selected_text = get_selected_text_by_clipboard_using_applescript()?;
     
     if selected_text.is_empty() {
-        return Ok((selected_text, None));
+        debug_println!("[CONTEXT_FALLBACK] No selected text found via clipboard, aborting.");
+        return Ok((String::new(), None));
     }
     
-    // 尝试获取上下文
-    match get_context_via_applescript() {
+    // Try to get the surrounding context using the mouse
+    match get_context_by_mouse() {
         Ok(context) => {
             if context.contains(&selected_text) {
-                debug_println!("[APPLESCRIPT_CONTEXT] Found context containing selected text");
+                debug_println!("[CONTEXT_FALLBACK] Mouse context contains selected text.");
                 Ok((selected_text, Some(context)))
             } else {
-                debug_println!("[APPLESCRIPT_CONTEXT] Context doesn't contain selected text, returning without context");
+                debug_println!("[CONTEXT_FALLBACK] Mouse context does not contain selected text.");
                 Ok((selected_text, None))
-        }
+            }
         }
         Err(e) => {
-            debug_println!("[APPLESCRIPT_CONTEXT] Failed to get context: {:?}", e);
+            debug_println!("[CONTEXT_FALLBACK] Failed to get context via mouse: {:?}", e);
             Ok((selected_text, None))
         }
     }
 }
 
-// AppleScript脚本获取上下文
-// 新策略：不再使用Cmd+A，而是基于当前选区，通过模拟Shift+Option+左右箭头来扩展选区，以获取更精确的上下文。
-fn get_context_via_applescript() -> Result<String, Box<dyn std::error::Error>> {
-    const CONTEXT_SCRIPT: &str = r#"
+fn get_context_by_mouse() -> Result<String, Box<dyn std::error::Error>> {
+    debug_println!("[CONTEXT_HYBRID] Attempting to get context via mouse click + AppleScript.");
+
+    let mut enigo = Enigo::new(&Settings::default())?;
+
+    // 1. Triple-click to select a paragraph using enigo.
+    for _ in 0..3 {
+        enigo.button(Button::Left, Click)?;
+        // A small delay between clicks is necessary for the OS to recognize it as a multi-click.
+        thread::sleep(Duration::from_millis(50));
+    }
+    // Give the system a moment to process the selection.
+    thread::sleep(Duration::from_millis(150));
+
+    // 2. Use a robust AppleScript to safely copy, manage the clipboard, and clean up.
+    const COPY_AND_CLEANUP_SCRIPT: &str = r#"
 use AppleScript version "2.4"
 use scripting additions
 use framework "Foundation"
 use framework "AppKit"
 
--- This script attempts to get the context of the entire text block/field.
--- It uses a more robust selection method that works in both editable fields
--- (with a cursor) and static text views (without a cursor).
+-- This script assumes text has already been selected (e.g., by a triple-click).
+-- It copies the selection, restores the clipboard, and cleans up the selection state.
 
 set savedClipboard to the clipboard
+set thePasteboard to current application's NSPasteboard's generalPasteboard()
+set initialChangeCount to thePasteboard's changeCount()
 
--- The following key combination is a robust way to select the current "block" of text.
--- 1. Command+Shift+Up Arrow: Selects from the current position to the beginning.
--- 2. Command+Shift+Down Arrow: Extends that selection to the very end.
--- This effectively selects the entire paragraph or text field content.
-tell application "System Events"
-    -- Select up to the beginning of the text area
-    key code 126 using {command down, shift down} -- Command + Shift + Up Arrow
-    delay 0.1
+-- Mute alert sound for the keystroke
+set savedAlertVolume to alert volume of (get volume settings)
+tell application "System Events" to set volume alert volume 0
 
-    -- Extend the selection to the end of the text area
-    key code 125 using {command down, shift down} -- Command + Shift + Down Arrow
-    delay 0.1
-end tell
-
--- Now copy the newly selected block (our context)
+-- Copy the selected text
 tell application "System Events" to keystroke "c" using {command down}
-delay 0.15 -- Increased delay for clipboard to update
+
+-- Restore alert volume
+tell application "System Events" to set volume alert volume savedAlertVolume
+
+-- Give the clipboard a moment to update
+delay 0.1
+
+-- Check if the clipboard actually changed. If not, nothing was selected/copied.
+if thePasteboard's changeCount() is initialChangeCount then
+    set the clipboard to savedClipboard
+    return ""
+end if
 
 set contextText to ""
 try
@@ -633,20 +654,42 @@ tell application "System Events" to key code 123 -- Arrow Left
 return contextText
 "#;
 
-    debug_println!("[APPLESCRIPT_CONTEXT] Executing context retrieval script by selecting the text block.");
     let output = std::process::Command::new("osascript")
         .arg("-e")
-        .arg(CONTEXT_SCRIPT)
+        .arg(COPY_AND_CLEANUP_SCRIPT)
         .output()?;
-    
+
     if output.status.success() {
         let content = String::from_utf8(output.stdout)?;
-        let content = content.trim();
-        debug_println!("[APPLESCRIPT_CONTEXT] Retrieved context length: {}", content.len());
-        Ok(content.to_string())
+        debug_println!("[CONTEXT_HYBRID] Retrieved context length: {}", content.len());
+        Ok(content.trim().to_string())
     } else {
         let err = String::from_utf8(output.stderr)?;
-        debug_println!("[APPLESCRIPT_CONTEXT] Script failed: {}", err);
+        debug_println!("[CONTEXT_HYBRID] Script failed: {}", err);
+        // If the script fails, try to restore the selection state with enigo as a fallback.
+        enigo.button(Button::Left, Click)?;
         Err(err.into())
     }
+}
+
+// Helper to set clipboard text
+fn set_clipboard_text(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+    use std::process::Command;
+
+    let mut child = Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    } else {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::Other,
+            "Could not open stdin for pbcopy",
+        )));
+    }
+
+    child.wait()?;
+    Ok(())
 }
